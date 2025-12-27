@@ -102,224 +102,151 @@ function showBanner() {
   console.log(chalk.gray(centerText(line)) + '\n');
 }
 
+function showPairingCode(waNumber, code) {
+  console.clear();
+  showBanner();
+  console.log(chalk.greenBright('✅ Pairing Code Generated Successfully!'));
+  console.log(chalk.gray('───────────────────────────────────────────\n'));
+  console.log(chalk.cyan('📱 WhatsApp Number:'), chalk.bold.white(waNumber));
+  console.log(chalk.yellow('🔢 Pairing Code:'), chalk.bold.magentaBright(code));
+  console.log(chalk.gray('\n───────────────────────────────────────────'));
+  console.log(chalk.cyan('📋 Instructions:'));
+  console.log(chalk.white('1. Open WhatsApp on your phone'));
+  console.log(chalk.white('2. Go to Settings → Linked Devices → Link a Device'));
+  console.log(chalk.white('3. Select "Link with phone number"'));
+  console.log(chalk.white(`4. Enter this number: ${chalk.bold(waNumber)}`));
+  console.log(chalk.white(`5. Enter this code: ${chalk.bold.magentaBright(code)}`));
+  console.log(chalk.green('\n⏳ Waiting for connection...'));
+}
+
 async function startBot() {
   showBanner();
   
-  // Create session directory if it doesn't exist
-  if (!fs.existsSync(authDir)) {
-    fs.mkdirSync(authDir, { recursive: true });
+  // Get WhatsApp number from command line arguments
+  const args = process.argv.slice(2);
+  let waNumber = args[0];
+  
+  // Validate the phone number format
+  if (!waNumber) {
+    console.log(chalk.red('❌ Error: WhatsApp number is required!'));
+    console.log(chalk.yellow('💡 Usage: npm start <whatsapp-number>'));
+    console.log(chalk.cyan('Example: npm start 94741984208\n'));
+    process.exit(1);
   }
   
-  const { state, saveCreds } = await useMultiFileAuthState(authDir);
+  // Remove any non-digit characters
+  waNumber = waNumber.replace(/\D/g, '');
   
+  // Validate number format (at least 10 digits)
+  if (waNumber.length < 10) {
+    console.log(chalk.red('❌ Error: Invalid WhatsApp number!'));
+    console.log(chalk.yellow('Please provide a valid number (e.g., 94741984208)\n'));
+    process.exit(1);
+  }
+  
+  console.log(chalk.cyan(`📱 Using WhatsApp Number: ${chalk.bold(waNumber)}\n`));
+  
+  const { state, saveCreds } = await useMultiFileAuthState(authDir);
   const sock = makeWASocket({
     auth: state,
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
   });
 
+  // Check if session exists
+  const sessionFiles = fs.existsSync(authDir) ? 
+    fs.readdirSync(authDir).filter(f => f.endsWith('.json')) : 
+    [];
+
+  // If no session exists, request pairing code
+  if (sessionFiles.length === 0) {
+    try {
+      console.log(chalk.yellow('⏳ Generating pairing code...\n'));
+      
+      const code = await sock.requestPairingCode(waNumber);
+      
+      if (!code) {
+        console.log(chalk.red('❌ Failed to generate pairing code!'));
+        console.log(chalk.yellow('Please check your number and try again.\n'));
+        process.exit(1);
+      }
+      
+      showPairingCode(waNumber, code);
+      
+    } catch (error) {
+      console.error(chalk.red('❌ Error generating pairing code:'), error.message);
+      
+      if (error.message.includes('not registered')) {
+        console.log(chalk.yellow('\n⚠️ This number may not be registered on WhatsApp.'));
+        console.log(chalk.yellow('Please check the number and try again.'));
+      } else if (error.message.includes('rate limit')) {
+        console.log(chalk.yellow('\n⚠️ Rate limit exceeded. Please wait a few minutes.'));
+      } else if (error.message.includes('timeout')) {
+        console.log(chalk.yellow('\n⚠️ Connection timeout. Please check your internet.'));
+      }
+      
+      console.log(chalk.yellow('\n🔄 Restarting in 5 seconds...'));
+      setTimeout(() => {
+        console.clear();
+        startBot();
+      }, 5000);
+      return;
+    }
+  } else {
+    console.log(chalk.green('✅ Existing session found. Connecting...\n'));
+  }
+
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect } = update;
-    
-    console.log(chalk.cyan(`📡 Connection status: ${connection}`));
 
     if (connection === 'open') {
-      console.log(chalk.greenBright('✅ Connected to WhatsApp!'));
-      console.log(chalk.cyan(`👤 User: ${sock.user?.id || 'Unknown'}`));
-      console.log(chalk.yellow('🤖 Bot is ready to receive messages...'));
-      
-      // Send connected message
-      const botInfo = `🤖 *NovoNex Bot Connected*\n\n` +
-                     `✅ Successfully connected to WhatsApp\n` +
-                     `👤 User: ${sock.user?.id || 'Unknown'}\n` +
-                     `⏰ Time: ${new Date().toLocaleString()}`;
-      
-      try {
-        // Send message to yourself to confirm connection
-        await sock.sendMessage(sock.user?.id, { text: botInfo });
-      } catch (err) {
-        console.log(chalk.yellow('⚠️ Could not send confirmation message'));
-      }
-      
+      console.clear();
+      showBanner();
+      console.log(chalk.greenBright('✅ Successfully Connected to WhatsApp!'));
+      console.log(chalk.gray('──────────────────────────────────────\n'));
+      console.log(chalk.cyan(`👤 User ID: ${sock.user?.id || 'Unknown'}`));
+      console.log(chalk.cyan(`📛 Name: ${sock.user?.name || 'Not available'}`));
+      console.log(chalk.yellow('\n🤖 Bot is now ready to receive messages...\n'));
     } else if (connection === 'close') {
-      console.log(chalk.yellow('🔌 Connection closed'));
       const reason = lastDisconnect?.error?.output?.statusCode;
-      console.log(chalk.yellow(`📊 Disconnect reason code: ${reason}`));
-      
       const shouldReconnect = reason !== DisconnectReason.loggedOut;
-      
       if (shouldReconnect) {
-        console.log(chalk.yellow('🔁 Connection lost. Reconnecting in 5 seconds...'));
+        console.log(chalk.yellow('🔁 Connection lost. Reconnecting in 3 seconds...'));
         setTimeout(() => {
+          console.clear();
           startBot();
-        }, 5000);
+        }, 3000);
       } else {
         console.log(chalk.red('❌ Invalid session. Please delete the session folder and try again.'));
-        console.log(chalk.yellow('💡 Run: rm -rf session'));
+        console.log(chalk.yellow('💡 Run: rm -rf session/\n'));
+        process.exit(0);
       }
-    } else if (connection === 'connecting') {
-      console.log(chalk.blue('🔄 Connecting to WhatsApp...'));
     }
   });
 
   sock.ev.on('creds.update', saveCreds);
   
-  sock.ev.on('messages.upsert', async m => {
-    try {
-      const msg = m.messages?.[0];
-      if (!msg) return;
-      
-      // Group messages ignore කරන්න
-      if (msg.key.remoteJid.endsWith('@g.us')) return;
+  sock.ev.on('messages.upsert', m => {
+    const msg = m.messages?.[0];
+    if (!msg) return;
+    
+    // Group messages ignore කරන්න
+    if (msg.key.remoteJid.endsWith('@g.us')) return;
 
-      console.log(chalk.blueBright('💬 Incoming message from:'), msg.key.remoteJid);
-      
-      await handler(sock, msg); 
+    console.log(chalk.blueBright('💬 Incoming message from:'), msg.key.remoteJid);
+    
+    try { 
+      handler(sock, msg); 
     } catch (err) {
-      console.error(chalk.red('[Handler Error]'), err.message);
+      console.error(chalk.red('[Handler Error]'), err);
     }
   });
-
-  // Handle pairing code request
-  const files = fs.readdirSync(authDir).filter(f => f.endsWith('.json'));
-  console.log(chalk.cyan(`📁 Session files found: ${files.length}`));
-  
-  if (files.length === 0) {
-    console.log(chalk.yellow('📱 No existing session found. Creating new session...'));
-    
-    let waNumber = process.env.WA_NUMBER;
-
-    // Number එක .env file එකෙන් නැත්නම් command line arguments වලින් ගන්න
-    if (!waNumber && process.argv[2]) {
-      waNumber = process.argv[2];
-    }
-
-    // තවමත් number එක නැත්නම් error message දක්වන්න
-    if (!waNumber) {
-      console.log(chalk.red('❌ WhatsApp number not found!'));
-      console.log(chalk.yellow('\n📝 Usage Options:'));
-      console.log(chalk.cyan('  1. Create .env file:'));
-      console.log(chalk.white('     echo "WA_NUMBER=94741984208" > .env'));
-      console.log(chalk.white('     npm start'));
-      console.log(chalk.cyan('\n  2. Use command line:'));
-      console.log(chalk.white('     npm start 94741984208'));
-      console.log(chalk.white('     node index.js 94741984208'));
-      console.log(chalk.cyan('\n  3. Try different formats:'));
-      console.log(chalk.white('     node index.js 94741984208  (94... format)'));
-      console.log(chalk.white('     node index.js 741984208     (without 94)'));
-      console.log(chalk.white('     node index.js 0741984208    (with 0)'));
-      process.exit(1);
-    }
-
-    // Number validation and formatting
-    console.log(chalk.cyan(`📱 Processing number: ${waNumber}`));
-    
-    // Clean number (remove +, spaces, etc.)
-    waNumber = waNumber.toString().replace(/[+\s\-()]/g, '');
-    
-    // If number starts with 0, replace with 94
-    if (waNumber.startsWith('0')) {
-      waNumber = '94' + waNumber.substring(1);
-    }
-    
-    // If number doesn't start with country code, add it
-    if (!waNumber.startsWith('94') && waNumber.length <= 10) {
-      waNumber = '94' + waNumber;
-    }
-    
-    console.log(chalk.green(`✅ Formatted number: ${waNumber}`));
-    
-    // Validate number
-    if (!/^\d{10,15}$/.test(waNumber)) {
-      console.log(chalk.red('❌ Invalid WhatsApp number format!'));
-      console.log(chalk.yellow('📝 Number should be 10-15 digits'));
-      console.log(chalk.yellow('📝 Examples: 94741984208, 741984208, 0741984208'));
-      process.exit(1);
-    }
-
-    console.log(chalk.yellow('⏳ Requesting pairing code from WhatsApp...'));
-    
-    try {
-      const code = await sock.requestPairingCode(waNumber);
-      
-      console.log(chalk.greenBright('\n' + '='.repeat(50)));
-      console.log(chalk.greenBright('✅ PAIRING CODE GENERATED SUCCESSFULLY!'));
-      console.log(chalk.greenBright('='.repeat(50)));
-      
-      console.log(chalk.yellow('\n' + '─'.repeat(40)));
-      console.log(chalk.bold.magentaBright(`          ${code}`));
-      console.log(chalk.yellow('─'.repeat(40)));
-      
-      console.log(chalk.cyan('\n📱 ON YOUR WHATSAPP APP:'));
-      console.log(chalk.white('  1. Open WhatsApp on your phone'));
-      console.log(chalk.white('  2. Tap on ⋮ (three dots) → Linked Devices'));
-      console.log(chalk.white('  3. Tap on "Link a Device"'));
-      console.log(chalk.white('  4. Tap on "Link with phone number"'));
-      console.log(chalk.white('  5. Enter this code: ') + chalk.bold.magentaBright(code));
-      
-      console.log(chalk.yellow('\n⏳ Waiting for connection...'));
-      console.log(chalk.gray('  The bot will connect automatically once you enter the code.'));
-      console.log(chalk.gray('  This may take 10-30 seconds.'));
-      
-    } catch (error) {
-      console.error(chalk.red('\n❌ ERROR REQUESTING PAIRING CODE:'));
-      console.error(chalk.red('  Message:'), error.message);
-      
-      console.log(chalk.yellow('\n💡 TROUBLESHOOTING TIPS:'));
-      console.log(chalk.white('  1. Check your number: ') + chalk.cyan(waNumber));
-      console.log(chalk.white('  2. Ensure WhatsApp is active on your phone'));
-      console.log(chalk.white('  3. Make sure your phone has internet'));
-      console.log(chalk.white('  4. Try different number formats:'));
-      console.log(chalk.white('     - ') + chalk.cyan('94741984208') + chalk.white(' (with 94)'));
-      console.log(chalk.white('     - ') + chalk.cyan('741984208') + chalk.white(' (without 94)'));
-      console.log(chalk.white('     - ') + chalk.cyan('0741984208') + chalk.white(' (with 0)'));
-      console.log(chalk.white('  5. Wait 1 minute and try again'));
-      
-      console.log(chalk.yellow('\n🔄 Trying alternative solution in 5 seconds...'));
-      
-      // Try alternative approach
-      setTimeout(async () => {
-        console.log(chalk.cyan('\n🔄 Attempting alternative connection method...'));
-        try {
-          // Alternative: Try without explicit number
-          console.log(chalk.yellow('📱 Trying to generate QR code instead...'));
-          
-          // We'll let the socket try to connect normally
-          console.log(chalk.green('✅ Alternative method initiated.'));
-          console.log(chalk.yellow('⏳ If pairing code fails, we may need QR code method.'));
-          
-        } catch (altError) {
-          console.error(chalk.red('❌ Alternative method also failed:'), altError.message);
-          console.log(chalk.yellow('💡 Please check your internet and try again.'));
-        }
-      }, 5000);
-    }
-  } else {
-    console.log(chalk.green(`✅ Existing session found with ${files.length} file(s)`));
-    console.log(chalk.yellow('🔄 Connecting using existing session...'));
-  }
 }
 
 // Handle process termination
 process.on('SIGINT', () => {
-  console.log(chalk.yellow('\n\n👋 Received shutdown signal'));
-  console.log(chalk.cyan('✅ Bot shutting down gracefully...'));
+  console.log(chalk.yellow('\n\n👋 Bot is shutting down...'));
   process.exit(0);
 });
 
-process.on('uncaughtException', (error) => {
-  console.error(chalk.red('⚠️ Uncaught Exception:'), error.message);
-  console.error(chalk.red('Stack:'), error.stack);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error(chalk.red('⚠️ Unhandled Rejection at:'), promise);
-  console.error(chalk.red('Reason:'), reason);
-});
-
-// Start the bot
-startBot().catch(error => {
-  console.error(chalk.red('❌ Failed to start bot:'), error.message);
-  console.error(chalk.red('Stack:'), error.stack);
-  process.exit(1);
-});
+startBot();
